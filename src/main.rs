@@ -381,7 +381,6 @@ enum Commands {
         delimiter: regex::Regex,
     },
 
-
     /// Join the lines with a separator
     Join {
         /// The file to print the column from
@@ -1070,7 +1069,6 @@ async fn field(file: FileOrStd, n: usize, delimiter: Regex) -> Result<()> {
     Ok(())
 }
 
-
 async fn unnest(file: FileOrStd, delimiter: Regex) -> Result<()> {
     let reader = file.open_read().await?;
     let mut lines = reader.lines();
@@ -1432,12 +1430,12 @@ async fn main() -> Result<()> {
         Commands::Field { file, n, delimiter } => {
             field(file.unwrap_or_default(), n, delimiter).await
         }
-        Commands::Unnest { file, delimiter } => {
-            unnest(file.unwrap_or_default(), delimiter).await
-        }
-        Commands::Replace { regex, replacement, file } => {
-            replace(file.unwrap_or_default(), regex, &replacement).await
-        }
+        Commands::Unnest { file, delimiter } => unnest(file.unwrap_or_default(), delimiter).await,
+        Commands::Replace {
+            regex,
+            replacement,
+            file,
+        } => replace(file.unwrap_or_default(), regex, &replacement).await,
         Commands::Clip {
             cache_dir,
             name,
