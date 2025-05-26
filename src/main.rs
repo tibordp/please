@@ -12,7 +12,7 @@ use clap_complete::{generate, Shell};
 use crate::cache::{cache_command, clip, clop};
 use crate::commands::{
     append, enrich, extract, field, format, group_by, intersect, join, merge, prepend, replace, sample, skip,
-    sort_lines, subtract, take, tally_impl, union, unnest, unzip, where_filter, zip, 
+    sort_lines, subtract, take, tally_impl, union, unnest, unzip, where_filter, window, zip, 
     Sort, SortType,
 };
 use crate::io::FileOrStd;
@@ -531,6 +531,21 @@ enum Commands {
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
     },
+
+    /// Monitor pipe throughput and show recent lines (like pv but for content)
+    Window {
+        /// Number of recent lines to display
+        #[clap(short, long, default_value = "5")]
+        lines: usize,
+
+        /// Update interval in milliseconds
+        #[clap(short, long, default_value = "500")]
+        refresh: u64,
+
+        /// The file to process (defaults to stdin)
+        #[clap(value_hint = ValueHint::FilePath)]
+        file: Option<FileOrStd>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -764,6 +779,11 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Window {
+            lines,
+            refresh,
+            file,
+        } => window(file.unwrap_or_default(), lines, refresh).await,
     }?;
 
     Ok(())

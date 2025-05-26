@@ -985,3 +985,220 @@ pub async fn group_by(
 
     Ok(())
 }
+
+pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Result<()> {
+    use std::collections::VecDeque;
+    use std::time::{Duration, Instant};
+    use tokio::time::interval;
+    use crossterm::{
+        terminal::enable_raw_mode,
+        cursor,
+        style::Print,
+        execute,
+        event::{self, Event, KeyCode, KeyEvent},
+    };
+    use std::io::{stderr, IsTerminal};
+    use tokio::io::BufReader;
+
+    // Only enable display if stderr is a TTY
+    let is_interactive = stderr().is_terminal();
+    
+    if is_interactive {
+        enable_raw_mode()?;
+    }
+
+    // Ensure cleanup on exit
+    let _cleanup_guard = CleanupGuard { is_interactive };
+
+    let reader = file.open_read().await?;
+    let mut buf_reader = BufReader::new(reader);
+    
+    // Statistics tracking
+    let mut total_lines = 0u64;
+    let start_time = Instant::now();
+    let mut last_update = Instant::now();
+    let mut lines_since_last_update = 0u64;
+    let mut current_rate = 0.0;
+    
+    // Circular buffer for recent lines
+    let mut recent_lines: VecDeque<String> = VecDeque::with_capacity(max_lines);
+    
+    // Setup refresh timer
+    let mut update_interval = interval(Duration::from_millis(refresh_ms));
+    
+    // Track display state
+    let mut display_written = false;
+    let mut display_height = 0usize;
+    
+    // Reserve space for our display at the bottom (only if interactive)
+    if is_interactive {
+        for _ in 0..(max_lines + 1) {
+            eprintln!(); // Create space below the command
+        }
+    }
+    
+    loop {
+        tokio::select! {
+            // Read from input
+            read_result = async {
+                let mut buffer = Vec::new();
+                let result: Result<Option<String>, anyhow::Error> = match buf_reader.read_until(b'\n', &mut buffer).await {
+                    Ok(0) => Ok(None), // EOF
+                    Ok(_) => {
+                        // Remove trailing newline if present
+                        if buffer.ends_with(&[b'\n']) {
+                            buffer.pop();
+                        }
+                        // Convert to string, replacing invalid UTF-8
+                        Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
+                    }
+                    Err(e) => Err(e.into()),
+                };
+                result
+            } => {
+                match read_result? {
+                    Some(line) => {
+                        // Pass through to stdout immediately
+                        println!("{}", line);
+                        
+                        // Update statistics
+                        total_lines += 1;
+                        lines_since_last_update += 1;
+                        
+                        // Store for display (handle control chars safely)
+                        let safe_line = line.chars()
+                            .map(|c| if c.is_control() && c != '\t' { '�' } else { c })
+                            .take(80) // Limit line length for display
+                            .collect::<String>();
+                        
+                        recent_lines.push_back(safe_line);
+                        if recent_lines.len() > max_lines {
+                            recent_lines.pop_front();
+                        }
+                    }
+                    None => {
+                        // End of input - clean up display and exit
+                        if display_written && is_interactive {
+                            // Move down past our display area
+                            execute!(stderr(), cursor::MoveDown(display_height as u16))?;
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // Check for Ctrl+C
+            key_event = async {
+                if is_interactive && event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                    match event::read() {
+                        Ok(Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })) 
+                            if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                return Err(anyhow::anyhow!("Interrupted by user"));
+                            }
+                        _ => {}
+                    }
+                }
+                // This future never resolves normally
+                std::future::pending::<Result<(), anyhow::Error>>().await
+            } => {
+                // Handle Ctrl+C (this branch is reached via the error above)
+                key_event?;
+            }
+            
+            // Update display
+            _ = update_interval.tick() => {
+                if !is_interactive {
+                    continue;
+                }
+                
+                let now = Instant::now();
+                let elapsed_since_last = now.duration_since(last_update).as_secs_f64();
+                
+                if elapsed_since_last > 0.0 {
+                    current_rate = lines_since_last_update as f64 / elapsed_since_last;
+                    lines_since_last_update = 0;
+                    last_update = now;
+                }
+                
+                let elapsed_total = now.duration_since(start_time);
+                
+                // Move to our display area (reserved lines at bottom)
+                execute!(stderr(), cursor::MoveUp((max_lines + 1) as u16))?;
+                
+                // Calculate current display height
+                display_height = 1 + recent_lines.len(); // stats line + content lines
+                
+                // Write stats line
+                execute!(
+                    stderr(),
+                    cursor::MoveToColumn(0),
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+                    Print(format!("Processing: {} lines | {:.1} lines/sec | {:02}:{:02}:{:02}",
+                        total_lines,
+                        current_rate,
+                        elapsed_total.as_secs() / 3600,
+                        (elapsed_total.as_secs() % 3600) / 60,
+                        elapsed_total.as_secs() % 60
+                    )),
+                    cursor::MoveDown(1),
+                    cursor::MoveToColumn(0)
+                )?;
+                
+                // Write recent lines
+                for line in &recent_lines {
+                    execute!(
+                        stderr(),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+                        Print(line),
+                        cursor::MoveDown(1),
+                        cursor::MoveToColumn(0)
+                    )?;
+                }
+                
+                // Clear any remaining reserved lines
+                for _ in recent_lines.len()..max_lines {
+                    execute!(
+                        stderr(),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+                        cursor::MoveDown(1),
+                        cursor::MoveToColumn(0)
+                    )?;
+                }
+                
+                display_written = true;
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+struct CleanupGuard {
+    is_interactive: bool,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if self.is_interactive {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+}
+
+fn clear_display_crossterm(height: usize) -> Result<()> {
+    use crossterm::{cursor, terminal, execute};
+    use std::io::stderr;
+    
+    if height > 0 {
+        execute!(stderr(), cursor::MoveUp(height as u16))?;
+        for _ in 0..height {
+            execute!(
+                stderr(),
+                cursor::MoveToColumn(0),
+                terminal::Clear(terminal::ClearType::CurrentLine),
+                cursor::MoveToNextLine(1)
+            )?;
+        }
+    }
+    Ok(())
+}

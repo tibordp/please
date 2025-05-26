@@ -1,4 +1,5 @@
 use please::*;
+use please::commands::window;
 use regex::Regex;
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -251,5 +252,14 @@ async fn test_group_distinct_values() {
         distinct_values: Some(1), // Get distinct fruits for each color
     };
     let result = group_by(file_input, 2, aggregations, delimiter, ",".to_string()).await;
+    assert!(result.is_ok());
+}
+#[tokio::test]
+async fn test_window_basic() {
+    let temp_file = create_test_file("line1\nline2\nline3\n").await;
+    let file_input = FileOrStd::File(temp_file.path().to_path_buf());
+    
+    // Test that window function doesnt crash (hard to test interactive features in unit tests)
+    let result = window(file_input, 3, 100).await;
     assert!(result.is_ok());
 }
