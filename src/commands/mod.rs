@@ -10,6 +10,8 @@ use clap::ValueEnum;
 use futures::{Stream, StreamExt, TryStreamExt};
 use rand::distributions::Distribution;
 use regex::Regex;
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde_json::Value;
 use std::cmp::Ordering;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio_stream::{wrappers::LinesStream, StreamMap};
@@ -69,7 +71,7 @@ impl WhereCondition {
         } else {
             None
         };
-        
+
         Ok(WhereCondition {
             field,
             op,
@@ -77,7 +79,7 @@ impl WhereCondition {
             regex,
         })
     }
-    
+
     pub fn evaluate(&self, line: &str, parts: &[&str]) -> bool {
         let field_value = if self.field == 0 {
             line
@@ -86,7 +88,7 @@ impl WhereCondition {
         } else {
             ""
         };
-        
+
         match self.op {
             CompareOp::Eq => field_value == self.value,
             CompareOp::Ne => field_value != self.value,
@@ -100,7 +102,9 @@ impl WhereCondition {
             }
             CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
                 // Try numeric comparison first
-                if let (Ok(field_num), Ok(value_num)) = (field_value.parse::<f64>(), self.value.parse::<f64>()) {
+                if let (Ok(field_num), Ok(value_num)) =
+                    (field_value.parse::<f64>(), self.value.parse::<f64>())
+                {
                     match self.op {
                         CompareOp::Lt => field_num < value_num,
                         CompareOp::Le => field_num <= value_num,
@@ -702,7 +706,7 @@ pub async fn where_filter(
 ) -> Result<()> {
     // Collect all specified conditions
     let mut condition_list = Vec::new();
-    
+
     if let Some(value) = conditions.eq {
         condition_list.push(WhereCondition::new(field, CompareOp::Eq, value)?);
     }
@@ -729,7 +733,9 @@ pub async fn where_filter(
     }
 
     if condition_list.is_empty() {
-        return Err(anyhow::anyhow!("No conditions specified. Use --eq, --gt, --contains, etc."));
+        return Err(anyhow::anyhow!(
+            "No conditions specified. Use --eq, --gt, --contains, etc."
+        ));
     }
 
     let reader = file.open_read().await?;
@@ -737,9 +743,12 @@ pub async fn where_filter(
 
     while let Some(line) = lines.next_line().await? {
         let parts: Vec<&str> = delimiter.split(&line).collect();
-        
+
         // All conditions must be true (AND logic)
-        if condition_list.iter().all(|condition| condition.evaluate(&line, &parts)) {
+        if condition_list
+            .iter()
+            .all(|condition| condition.evaluate(&line, &parts))
+        {
             println!("{}", line);
         }
     }
@@ -773,7 +782,7 @@ pub async fn sort_lines(
         } else {
             ""
         };
-        
+
         let value_b = if field == 0 {
             line_b.as_str()
         } else if field <= parts_b.len() {
@@ -784,14 +793,12 @@ pub async fn sort_lines(
 
         let cmp = match sort_type {
             SortType::String => value_a.cmp(value_b),
-            SortType::Numeric => {
-                match (value_a.parse::<f64>(), value_b.parse::<f64>()) {
-                    (Ok(a), Ok(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
-                    (Ok(_), Err(_)) => Ordering::Less,
-                    (Err(_), Ok(_)) => Ordering::Greater,
-                    (Err(_), Err(_)) => value_a.cmp(value_b),
-                }
-            }
+            SortType::Numeric => match (value_a.parse::<f64>(), value_b.parse::<f64>()) {
+                (Ok(a), Ok(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => value_a.cmp(value_b),
+            },
             SortType::Date => {
                 // Simple date comparison - could be enhanced with proper date parsing
                 value_a.cmp(value_b)
@@ -879,7 +886,7 @@ pub async fn group_by(
     // Collect and group data
     while let Some(line) = lines.next_line().await? {
         let parts: Vec<&str> = delimiter.split(&line).collect();
-        
+
         let group_key = if group_field == 0 {
             line.clone()
         } else if group_field <= parts.len() {
@@ -890,11 +897,11 @@ pub async fn group_by(
 
         if is_dedup_only {
             // For dedup, just track unique group keys
-            group_lines.entry(group_key.clone()).or_insert_with(Vec::new);
+            group_lines.entry(group_key.clone()).or_default();
         } else {
             // Store the full line parts for aggregation
             let parts_owned: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
-            group_lines.entry(group_key).or_insert_with(Vec::new).push(parts_owned);
+            group_lines.entry(group_key).or_default().push(parts_owned);
         }
     }
 
@@ -908,10 +915,11 @@ pub async fn group_by(
         // Calculate and output aggregations
         for (group_key, lines_in_group) in group_lines {
             let mut results = vec![group_key];
-            
+
             for (agg_func, agg_field) in &agg_fields {
                 let values: Vec<String> = if let Some(field) = agg_field {
-                    lines_in_group.iter()
+                    lines_in_group
+                        .iter()
                         .filter_map(|parts| {
                             if *field == 0 {
                                 Some(parts.join(&output_delimiter))
@@ -934,10 +942,7 @@ pub async fn group_by(
                         distinct.len().to_string()
                     }
                     AggregateFunction::Sum => {
-                        let sum: f64 = values
-                            .iter()
-                            .filter_map(|v| v.parse::<f64>().ok())
-                            .sum();
+                        let sum: f64 = values.iter().filter_map(|v| v.parse::<f64>().ok()).sum();
                         sum.to_string()
                     }
                     AggregateFunction::Avg => {
@@ -951,20 +956,16 @@ pub async fn group_by(
                             (nums.iter().sum::<f64>() / nums.len() as f64).to_string()
                         }
                     }
-                    AggregateFunction::Min => {
-                        values
-                            .iter()
-                            .filter_map(|v| v.parse::<f64>().ok())
-                            .fold(f64::INFINITY, f64::min)
-                            .to_string()
-                    }
-                    AggregateFunction::Max => {
-                        values
-                            .iter()
-                            .filter_map(|v| v.parse::<f64>().ok())
-                            .fold(f64::NEG_INFINITY, f64::max)
-                            .to_string()
-                    }
+                    AggregateFunction::Min => values
+                        .iter()
+                        .filter_map(|v| v.parse::<f64>().ok())
+                        .fold(f64::INFINITY, f64::min)
+                        .to_string(),
+                    AggregateFunction::Max => values
+                        .iter()
+                        .filter_map(|v| v.parse::<f64>().ok())
+                        .fold(f64::NEG_INFINITY, f64::max)
+                        .to_string(),
                     AggregateFunction::First => values.first().unwrap_or(&String::new()).clone(),
                     AggregateFunction::Last => values.last().unwrap_or(&String::new()).clone(),
                     AggregateFunction::Values => values.join(","),
@@ -987,22 +988,22 @@ pub async fn group_by(
 }
 
 pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Result<()> {
-    use std::collections::VecDeque;
-    use std::time::{Duration, Instant};
-    use tokio::time::interval;
     use crossterm::{
-        terminal::enable_raw_mode,
         cursor,
-        style::Print,
-        execute,
         event::{self, Event, KeyCode, KeyEvent},
+        execute,
+        style::Print,
+        terminal::enable_raw_mode,
     };
+    use std::collections::VecDeque;
     use std::io::{stderr, IsTerminal};
+    use std::time::{Duration, Instant};
     use tokio::io::BufReader;
+    use tokio::time::interval;
 
     // Only enable display if stderr is a TTY
     let is_interactive = stderr().is_terminal();
-    
+
     if is_interactive {
         enable_raw_mode()?;
     }
@@ -1012,31 +1013,31 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
 
     let reader = file.open_read().await?;
     let mut buf_reader = BufReader::new(reader);
-    
+
     // Statistics tracking
     let mut total_lines = 0u64;
     let start_time = Instant::now();
     let mut last_update = Instant::now();
     let mut lines_since_last_update = 0u64;
     let mut current_rate = 0.0;
-    
+
     // Circular buffer for recent lines
     let mut recent_lines: VecDeque<String> = VecDeque::with_capacity(max_lines);
-    
+
     // Setup refresh timer
     let mut update_interval = interval(Duration::from_millis(refresh_ms));
-    
+
     // Track display state
     let mut display_written = false;
     let mut display_height = 0usize;
-    
+
     // Reserve space for our display at the bottom (only if interactive)
     if is_interactive {
         for _ in 0..(max_lines + 1) {
             eprintln!(); // Create space below the command
         }
     }
-    
+
     loop {
         tokio::select! {
             // Read from input
@@ -1046,7 +1047,7 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                     Ok(0) => Ok(None), // EOF
                     Ok(_) => {
                         // Remove trailing newline if present
-                        if buffer.ends_with(&[b'\n']) {
+                        if buffer.ends_with(b"\n") {
                             buffer.pop();
                         }
                         // Convert to string, replacing invalid UTF-8
@@ -1060,17 +1061,17 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                     Some(line) => {
                         // Pass through to stdout immediately
                         println!("{}", line);
-                        
+
                         // Update statistics
                         total_lines += 1;
                         lines_since_last_update += 1;
-                        
+
                         // Store for display (handle control chars safely)
                         let safe_line = line.chars()
                             .map(|c| if c.is_control() && c != '\t' { '�' } else { c })
                             .take(80) // Limit line length for display
                             .collect::<String>();
-                        
+
                         recent_lines.push_back(safe_line);
                         if recent_lines.len() > max_lines {
                             recent_lines.pop_front();
@@ -1086,12 +1087,12 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                     }
                 }
             }
-            
+
             // Check for Ctrl+C
             key_event = async {
                 if is_interactive && event::poll(Duration::from_millis(0)).unwrap_or(false) {
                     match event::read() {
-                        Ok(Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })) 
+                        Ok(Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. }))
                             if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                                 return Err(anyhow::anyhow!("Interrupted by user"));
                             }
@@ -1104,30 +1105,30 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                 // Handle Ctrl+C (this branch is reached via the error above)
                 key_event?;
             }
-            
+
             // Update display
             _ = update_interval.tick() => {
                 if !is_interactive {
                     continue;
                 }
-                
+
                 let now = Instant::now();
                 let elapsed_since_last = now.duration_since(last_update).as_secs_f64();
-                
+
                 if elapsed_since_last > 0.0 {
                     current_rate = lines_since_last_update as f64 / elapsed_since_last;
                     lines_since_last_update = 0;
                     last_update = now;
                 }
-                
+
                 let elapsed_total = now.duration_since(start_time);
-                
+
                 // Move to our display area (reserved lines at bottom)
                 execute!(stderr(), cursor::MoveUp((max_lines + 1) as u16))?;
-                
+
                 // Calculate current display height
                 display_height = 1 + recent_lines.len(); // stats line + content lines
-                
+
                 // Write stats line
                 execute!(
                     stderr(),
@@ -1143,7 +1144,7 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                     cursor::MoveDown(1),
                     cursor::MoveToColumn(0)
                 )?;
-                
+
                 // Write recent lines
                 for line in &recent_lines {
                     execute!(
@@ -1154,7 +1155,7 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                         cursor::MoveToColumn(0)
                     )?;
                 }
-                
+
                 // Clear any remaining reserved lines
                 for _ in recent_lines.len()..max_lines {
                     execute!(
@@ -1164,12 +1165,12 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                         cursor::MoveToColumn(0)
                     )?;
                 }
-                
+
                 display_written = true;
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -1185,20 +1186,256 @@ impl Drop for CleanupGuard {
     }
 }
 
-fn clear_display_crossterm(height: usize) -> Result<()> {
-    use crossterm::{cursor, terminal, execute};
-    use std::io::stderr;
-    
-    if height > 0 {
-        execute!(stderr(), cursor::MoveUp(height as u16))?;
-        for _ in 0..height {
-            execute!(
-                stderr(),
-                cursor::MoveToColumn(0),
-                terminal::Clear(terminal::ClearType::CurrentLine),
-                cursor::MoveToNextLine(1)
-            )?;
+pub async fn jgrep(
+    file: FileOrStd,
+    pattern: String,
+    keys_only: bool,
+    values_only: bool,
+    ignore_case: bool,
+    pretty: bool,
+) -> Result<()> {
+    use tokio::task;
+
+    // Get the underlying std reader directly
+    let std_reader = match file {
+        FileOrStd::Std => Box::new(std::io::stdin()) as Box<dyn std::io::Read + Send>,
+        FileOrStd::File(path) => {
+            let file = std::fs::File::open(path)?;
+            Box::new(file) as Box<dyn std::io::Read + Send>
+        }
+    };
+
+    // Process with true streaming in blocking task
+    let result = task::spawn_blocking(move || -> Result<bool> {
+        let buf_reader = std::io::BufReader::new(std_reader);
+        stream_json_filter(
+            buf_reader,
+            pattern,
+            keys_only,
+            values_only,
+            ignore_case,
+            pretty,
+        )
+    })
+    .await??;
+
+    if !result {
+        // No matches found - exit with code 1 like grep
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn stream_json_filter<R: std::io::BufRead>(
+    reader: R,
+    pattern: String,
+    keys_only: bool,
+    values_only: bool,
+    ignore_case: bool,
+    pretty: bool,
+) -> Result<bool> {
+    use serde_json::Deserializer;
+
+    let mut has_any_matches = false;
+    let mut deserializer = Deserializer::from_reader(reader);
+
+    // Process each top-level JSON value from stream using raw deserialization
+    loop {
+        let filter = JsonFilter {
+            pattern: &pattern,
+            keys_only,
+            values_only,
+            ignore_case,
+        };
+
+        match filter.deserialize(&mut deserializer) {
+            Ok(Some(result)) => {
+                has_any_matches = true;
+                let output = if pretty {
+                    serde_json::to_string_pretty(&result)?
+                } else {
+                    serde_json::to_string(&result)?
+                };
+                println!("{}", output);
+            }
+            Ok(None) => {
+                // This JSON value had no matches, continue to next
+            }
+            Err(e) if e.is_eof() => break,
+            Err(e) => return Err(anyhow::anyhow!("JSON parse error: {}", e)),
         }
     }
-    Ok(())
+
+    Ok(has_any_matches)
+}
+
+// Token-by-token streaming JSON filter that never materializes full input structures
+struct JsonFilter<'a> {
+    pattern: &'a str,
+    keys_only: bool,
+    values_only: bool,
+    ignore_case: bool,
+}
+
+impl JsonFilter<'_> {
+    fn matches_pattern(&self, text: &str) -> bool {
+        if self.ignore_case {
+            text.to_lowercase().contains(&self.pattern.to_lowercase())
+        } else {
+            text.contains(self.pattern)
+        }
+    }
+
+    fn should_include_key(&self, key: &str) -> bool {
+        !self.values_only && self.matches_pattern(key)
+    }
+
+    fn should_include_value(&self, value: &str) -> bool {
+        !self.keys_only && self.matches_pattern(value)
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for JsonFilter<'_> {
+    type Value = Option<Value>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(FilterVisitor(self))
+    }
+}
+
+struct FilterVisitor<'a>(JsonFilter<'a>);
+
+impl<'de> Visitor<'de> for FilterVisitor<'_> {
+    type Value = Option<Value>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        if self.0.should_include_value(&v.to_string()) {
+            Ok(Some(Value::Bool(v)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        if self.0.should_include_value(&v.to_string()) {
+            Ok(Some(Value::Number(v.into())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        if self.0.should_include_value(&v.to_string()) {
+            Ok(Some(Value::Number(v.into())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        if self.0.should_include_value(&v.to_string()) {
+            if let Some(n) = serde_json::Number::from_f64(v) {
+                Ok(Some(Value::Number(n)))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        if self.0.should_include_value(v) {
+            Ok(Some(Value::String(v.to_string())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_map<V>(self, mut map: V) -> Result<Self::Value, V::Error>
+    where
+        V: MapAccess<'de>,
+    {
+        let mut result_map = serde_json::Map::new();
+        let mut has_matches = false;
+
+        // Process each key-value pair without loading full values into memory
+        while let Some(key) = map.next_key::<String>()? {
+            let key_matches = self.0.should_include_key(&key);
+
+            if key_matches {
+                // Key matches - deserialize and include the full value
+                let full_value: Value = map.next_value()?;
+                result_map.insert(key, full_value);
+                has_matches = true;
+            } else {
+                // Key doesn't match - use streaming filter on the value
+                let filter = JsonFilter {
+                    pattern: self.0.pattern,
+                    keys_only: self.0.keys_only,
+                    values_only: self.0.values_only,
+                    ignore_case: self.0.ignore_case,
+                };
+
+                match map.next_value_seed(filter)? {
+                    Some(filtered_value) => {
+                        result_map.insert(key, filtered_value);
+                        has_matches = true;
+                    }
+                    None => {
+                        // Value had no matches, skip it
+                    }
+                }
+            }
+        }
+
+        if has_matches {
+            Ok(Some(Value::Object(result_map)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
+    where
+        V: SeqAccess<'de>,
+    {
+        let mut result_array = Vec::new();
+        let mut has_matches = false;
+
+        // Process each array element without loading full array into memory
+        while let Some(element) = seq.next_element_seed(JsonFilter {
+            pattern: self.0.pattern,
+            keys_only: self.0.keys_only,
+            values_only: self.0.values_only,
+            ignore_case: self.0.ignore_case,
+        })? {
+            if let Some(filtered_element) = element {
+                result_array.push(filtered_element);
+                has_matches = true;
+            }
+        }
+
+        if has_matches {
+            Ok(Some(Value::Array(result_array)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        if self.0.should_include_value("null") {
+            Ok(Some(Value::Null))
+        } else {
+            Ok(None)
+        }
+    }
 }

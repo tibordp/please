@@ -11,9 +11,9 @@ use clap_complete::{generate, Shell};
 
 use crate::cache::{cache_command, clip, clop};
 use crate::commands::{
-    append, enrich, extract, field, format, group_by, intersect, join, merge, prepend, replace, sample, skip,
-    sort_lines, subtract, take, tally_impl, union, unnest, unzip, where_filter, window, zip, 
-    Sort, SortType,
+    append, enrich, extract, field, format, group_by, intersect, jgrep, join, merge, prepend,
+    replace, sample, skip, sort_lines, subtract, take, tally_impl, union, unnest, unzip,
+    where_filter, window, zip, Sort, SortType,
 };
 use crate::io::FileOrStd;
 
@@ -546,6 +546,32 @@ enum Commands {
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
     },
+
+    /// Filter JSON to show only subtrees containing matching values
+    Jgrep {
+        /// Pattern to search for in JSON values and keys
+        pattern: String,
+
+        /// Match only keys (not values)
+        #[clap(long)]
+        keys_only: bool,
+
+        /// Match only values (not keys)
+        #[clap(long)]
+        values_only: bool,
+
+        /// Case insensitive matching
+        #[clap(short, long)]
+        ignore_case: bool,
+
+        /// Pretty-print output with indentation
+        #[clap(short, long)]
+        pretty: bool,
+
+        /// The file to process (defaults to stdin)
+        #[clap(value_hint = ValueHint::FilePath)]
+        file: Option<FileOrStd>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -750,7 +776,16 @@ async fn main() -> Result<()> {
             reverse,
             delimiter,
             file,
-        } => sort_lines(file.unwrap_or_default(), field, sort_type, reverse, delimiter).await,
+        } => {
+            sort_lines(
+                file.unwrap_or_default(),
+                field,
+                sort_type,
+                reverse,
+                delimiter,
+            )
+            .await
+        }
         Commands::Group {
             field,
             aggregations,
@@ -784,6 +819,24 @@ async fn main() -> Result<()> {
             refresh,
             file,
         } => window(file.unwrap_or_default(), lines, refresh).await,
+        Commands::Jgrep {
+            pattern,
+            keys_only,
+            values_only,
+            ignore_case,
+            pretty,
+            file,
+        } => {
+            jgrep(
+                file.unwrap_or_default(),
+                pattern,
+                keys_only,
+                values_only,
+                ignore_case,
+                pretty,
+            )
+            .await
+        }
     }?;
 
     Ok(())

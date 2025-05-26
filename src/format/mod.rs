@@ -90,7 +90,7 @@ pub fn parse_format_string(s: &str) -> Result<Vec<Piece>> {
 
 pub fn format_line(format_string: &[Piece], line: &str, parts: Option<&[&str]>) -> String {
     let mut output = String::new();
-    
+
     for piece in format_string {
         match piece {
             Piece::Literal(s) => {
@@ -113,6 +113,6 @@ pub fn format_line(format_string: &[Piece], line: &str, parts: Option<&[&str]>) 
             }
         }
     }
-    
+
     output
 }
