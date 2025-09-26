@@ -30,6 +30,11 @@ Commands:
   clop       Paste from the clipboard
   install    Install the commands as symlinks
   complete   Generate shell completions
+  where      Filter rows based on field conditions
+  sort       Sort lines by field
+  group      Group by field and aggregate (defaults to dedup like sort -u)
+  window     Monitor pipe throughput and show recent lines (like pv but for content)
+  jgrep      Filter JSON to show only subtrees containing matching values
   help       Print this message or the help of the given subcommand(s)
 
 Options:
