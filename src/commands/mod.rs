@@ -31,7 +31,7 @@ pub enum SortType {
     /// Sort as strings (lexicographic)
     String,
     /// Sort as numbers
-    Numeric
+    Numeric,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum, Debug)]
@@ -796,7 +796,7 @@ pub async fn sort_lines(
                 (Ok(_), Err(_)) => Ordering::Less,
                 (Err(_), Ok(_)) => Ordering::Greater,
                 (Err(_), Err(_)) => value_a.cmp(value_b),
-            }
+            },
         };
 
         if reverse {
@@ -982,11 +982,7 @@ pub async fn group_by(
 }
 
 pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Result<()> {
-    use crossterm::{
-        cursor,
-        execute,
-        style::Print,
-    };
+    use crossterm::{cursor, execute, style::Print};
     use std::collections::VecDeque;
     use std::io::{stderr, IsTerminal};
     use std::time::{Duration, Instant};
