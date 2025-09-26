@@ -31,9 +31,7 @@ pub enum SortType {
     /// Sort as strings (lexicographic)
     String,
     /// Sort as numbers
-    Numeric,
-    /// Sort as dates (ISO format)
-    Date,
+    Numeric
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum, Debug)]
@@ -798,10 +796,6 @@ pub async fn sort_lines(
                 (Ok(_), Err(_)) => Ordering::Less,
                 (Err(_), Ok(_)) => Ordering::Greater,
                 (Err(_), Err(_)) => value_a.cmp(value_b),
-            },
-            SortType::Date => {
-                // Simple date comparison - could be enhanced with proper date parsing
-                value_a.cmp(value_b)
             }
         };
 
@@ -990,10 +984,8 @@ pub async fn group_by(
 pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Result<()> {
     use crossterm::{
         cursor,
-        event::{self, Event, KeyCode, KeyEvent},
         execute,
         style::Print,
-        terminal::enable_raw_mode,
     };
     use std::collections::VecDeque;
     use std::io::{stderr, IsTerminal};
@@ -1003,13 +995,6 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
 
     // Only enable display if stderr is a TTY
     let is_interactive = stderr().is_terminal();
-
-    if is_interactive {
-        enable_raw_mode()?;
-    }
-
-    // Ensure cleanup on exit
-    let _cleanup_guard = CleanupGuard { is_interactive };
 
     let reader = file.open_read().await?;
     let mut buf_reader = BufReader::new(reader);
@@ -1088,24 +1073,6 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
                 }
             }
 
-            // Check for Ctrl+C
-            key_event = async {
-                if is_interactive && event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                    match event::read() {
-                        Ok(Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. }))
-                            if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                                return Err(anyhow::anyhow!("Interrupted by user"));
-                            }
-                        _ => {}
-                    }
-                }
-                // This future never resolves normally
-                std::future::pending::<Result<(), anyhow::Error>>().await
-            } => {
-                // Handle Ctrl+C (this branch is reached via the error above)
-                key_event?;
-            }
-
             // Update display
             _ = update_interval.tick() => {
                 if !is_interactive {
@@ -1172,18 +1139,6 @@ pub async fn window(file: FileOrStd, max_lines: usize, refresh_ms: u64) -> Resul
     }
 
     Ok(())
-}
-
-struct CleanupGuard {
-    is_interactive: bool,
-}
-
-impl Drop for CleanupGuard {
-    fn drop(&mut self) {
-        if self.is_interactive {
-            let _ = crossterm::terminal::disable_raw_mode();
-        }
-    }
 }
 
 pub async fn jgrep(
