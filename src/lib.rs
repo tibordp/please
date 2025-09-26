@@ -1,4 +1,4 @@
-// Integration tests for the please command-line tool
+// Library root for the please command-line tool
 
 pub mod cache;
 pub mod commands;

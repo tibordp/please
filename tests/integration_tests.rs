@@ -262,7 +262,7 @@ async fn test_window_basic() {
     let temp_file = create_test_file("line1\nline2\nline3\n").await;
     let file_input = FileOrStd::File(temp_file.path().to_path_buf());
 
-    // Test that window function doesnt crash (hard to test interactive features in unit tests)
+    // Test that window function doesn't crash (hard to test interactive features in unit tests)
     let result = window(file_input, 3, 100).await;
     assert!(result.is_ok());
 }
