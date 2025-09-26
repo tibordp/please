@@ -180,7 +180,7 @@ enum Commands {
     /// Split columns into separate files
     Unzip {
         #[clap(required = true, value_hint = ValueHint::FilePath)]
-        /// The files to split
+        /// The files to write split columns to
         files: Vec<FileOrStd>,
 
         /// Delimiter regex
