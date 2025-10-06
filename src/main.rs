@@ -12,7 +12,7 @@ use clap_complete::{generate, Shell};
 use crate::cache::{cache_command, clip, clop};
 use crate::commands::{
     append, enrich, extract, field, format, group_by, intersect, jgrep, join, merge, prepend,
-    replace, sample, skip, sort_lines, subtract, take, tally_impl, union, unnest, unzip,
+    replace, sample, skip, sort_lines, subtract, take, tally_impl, transpose, union, unnest, unzip,
     where_filter, window, zip, Sort, SortType,
 };
 use crate::io::FileOrStd;
@@ -572,6 +572,21 @@ enum Commands {
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
     },
+
+    /// Transpose rows and columns
+    Transpose {
+        /// Input delimiter regex
+        #[clap(short, long, default_value = r"\t|,")]
+        delimiter: regex::Regex,
+
+        /// Output delimiter
+        #[clap(short, long, default_value = ",")]
+        output_delimiter: String,
+
+        /// The file to process (defaults to stdin)
+        #[clap(value_hint = ValueHint::FilePath)]
+        file: Option<FileOrStd>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -837,6 +852,11 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Transpose {
+            delimiter,
+            output_delimiter,
+            file,
+        } => transpose(file.unwrap_or_default(), delimiter, output_delimiter).await
     }?;
 
     Ok(())

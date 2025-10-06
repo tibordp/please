@@ -1390,3 +1390,47 @@ impl<'de> Visitor<'de> for FilterVisitor<'_> {
         }
     }
 }
+
+pub async fn transpose(
+    file: FileOrStd,
+    delimiter: Regex,
+    output_delimiter: String,
+) -> Result<()> {
+    let mut reader = file.open_read().await?;
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    // Read all lines and parse into columns
+    while reader.read_line(&mut line).await? > 0 {
+        let trimmed = line.trim_end();
+        if !trimmed.is_empty() {
+            let columns: Vec<&str> = delimiter.split(trimmed).collect();
+            lines.push(columns.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        }
+        line.clear();
+    }
+
+    if lines.is_empty() {
+        return Ok(());
+    }
+
+    // Find the maximum number of columns
+    let max_cols = lines.iter().map(|line| line.len()).max().unwrap_or(0);
+
+    // Transpose: for each column index, collect values from all rows
+    for col_idx in 0..max_cols {
+        let transposed_row: Vec<String> = lines
+            .iter()
+            .map(|row| {
+                row.get(col_idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect();
+
+        println!("{}", transposed_row.join(&output_delimiter));
+    }
+
+    Ok(())
+}
