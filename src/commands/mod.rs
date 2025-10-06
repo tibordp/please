@@ -11,6 +11,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use rand::distributions::Distribution;
 use regex::Regex;
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
 use serde_json::Value;
 use std::cmp::Ordering;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -632,9 +633,13 @@ fn parse_field_selector(selector: &str) -> Result<Vec<usize>> {
             if range_parts.len() != 2 {
                 anyhow::bail!("Invalid range syntax: {}", part);
             }
-            let start: usize = range_parts[0].trim().parse()
+            let start: usize = range_parts[0]
+                .trim()
+                .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid number: {}", range_parts[0]))?;
-            let end: usize = range_parts[1].trim().parse()
+            let end: usize = range_parts[1]
+                .trim()
+                .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid number: {}", range_parts[1]))?;
 
             if start == 0 || end == 0 {
@@ -649,7 +654,8 @@ fn parse_field_selector(selector: &str) -> Result<Vec<usize>> {
             }
         } else {
             // Single field
-            let n: usize = part.parse()
+            let n: usize = part
+                .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid field number: {}", part))?;
             if n == 0 {
                 anyhow::bail!("Field indices must be >= 1 (use '0' alone to print whole line)");
@@ -1195,6 +1201,7 @@ pub async fn jgrep(
     values_only: bool,
     ignore_case: bool,
     pretty: bool,
+    context: usize,
 ) -> Result<()> {
     use tokio::task;
 
@@ -1217,6 +1224,7 @@ pub async fn jgrep(
             values_only,
             ignore_case,
             pretty,
+            context,
         )
     })
     .await??;
@@ -1236,36 +1244,65 @@ fn stream_json_filter<R: std::io::BufRead>(
     values_only: bool,
     ignore_case: bool,
     pretty: bool,
+    context: usize,
 ) -> Result<bool> {
     use serde_json::Deserializer;
 
     let mut has_any_matches = false;
     let mut deserializer = Deserializer::from_reader(reader);
 
-    // Process each top-level JSON value from stream using raw deserialization
-    loop {
-        let filter = JsonFilter {
-            pattern: &pattern,
-            keys_only,
-            values_only,
-            ignore_case,
-        };
+    if context == 0 {
+        // Use streaming filter for context=0
+        loop {
+            let filter = JsonFilter {
+                pattern: &pattern,
+                keys_only,
+                values_only,
+                ignore_case,
+            };
 
-        match filter.deserialize(&mut deserializer) {
-            Ok(Some(result)) => {
-                has_any_matches = true;
-                let output = if pretty {
-                    serde_json::to_string_pretty(&result)?
-                } else {
-                    serde_json::to_string(&result)?
-                };
-                println!("{}", output);
+            match filter.deserialize(&mut deserializer) {
+                Ok(Some(result)) => {
+                    has_any_matches = true;
+                    let output = if pretty {
+                        serde_json::to_string_pretty(&result)?
+                    } else {
+                        serde_json::to_string(&result)?
+                    };
+                    println!("{}", output);
+                }
+                Ok(None) => {
+                    // This JSON value had no matches, continue to next
+                }
+                Err(e) if e.is_eof() => break,
+                Err(e) => return Err(anyhow::anyhow!("JSON parse error: {}", e)),
             }
-            Ok(None) => {
-                // This JSON value had no matches, continue to next
+        }
+    } else {
+        // Use context-aware filtering for context>0
+        loop {
+            match Value::deserialize(&mut deserializer) {
+                Ok(value) => {
+                    if let Some(filtered) = filter_with_context(
+                        &value,
+                        &pattern,
+                        keys_only,
+                        values_only,
+                        ignore_case,
+                        context,
+                    ) {
+                        has_any_matches = true;
+                        let output = if pretty {
+                            serde_json::to_string_pretty(&filtered)?
+                        } else {
+                            serde_json::to_string(&filtered)?
+                        };
+                        println!("{}", output);
+                    }
+                }
+                Err(e) if e.is_eof() => break,
+                Err(e) => return Err(anyhow::anyhow!("JSON parse error: {}", e)),
             }
-            Err(e) if e.is_eof() => break,
-            Err(e) => return Err(anyhow::anyhow!("JSON parse error: {}", e)),
         }
     }
 
@@ -1442,11 +1479,331 @@ impl<'de> Visitor<'de> for FilterVisitor<'_> {
     }
 }
 
-pub async fn transpose(
-    file: FileOrStd,
-    delimiter: Regex,
-    output_delimiter: String,
-) -> Result<()> {
+// Context-aware filtering: find all matching paths, then filter with context
+fn filter_with_context(
+    value: &Value,
+    pattern: &str,
+    keys_only: bool,
+    values_only: bool,
+    ignore_case: bool,
+    context: usize,
+) -> Option<Value> {
+    // First pass: find all matching paths
+    let mut matching_paths = Vec::new();
+    find_matching_paths(
+        value,
+        pattern,
+        keys_only,
+        values_only,
+        ignore_case,
+        &mut Vec::new(),
+        &mut matching_paths,
+    );
+
+    if matching_paths.is_empty() {
+        return None;
+    }
+
+    // Strip N segments from each path to get context prefixes
+    let context_prefixes: Vec<Vec<String>> = matching_paths
+        .into_iter()
+        .map(|mut path| {
+            // Remove 'context' segments from the end
+            let strip_count = context.min(path.len());
+            path.truncate(path.len().saturating_sub(strip_count));
+            path
+        })
+        .collect();
+
+    // Second pass: filter value to only include context prefixes
+    filter_by_prefixes(value, &context_prefixes)
+}
+
+// Recursively find all paths that match the pattern
+fn find_matching_paths(
+    value: &Value,
+    pattern: &str,
+    keys_only: bool,
+    values_only: bool,
+    ignore_case: bool,
+    current_path: &mut Vec<String>,
+    results: &mut Vec<Vec<String>>,
+) {
+    let matches_pattern = |text: &str| {
+        if ignore_case {
+            text.to_lowercase().contains(&pattern.to_lowercase())
+        } else {
+            text.contains(pattern)
+        }
+    };
+
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                let key_matches = !values_only && matches_pattern(key);
+
+                current_path.push(key.clone());
+
+                if key_matches {
+                    // Key matches - record this path
+                    results.push(current_path.clone());
+                }
+
+                // Recurse into value
+                find_matching_paths(
+                    val,
+                    pattern,
+                    keys_only,
+                    values_only,
+                    ignore_case,
+                    current_path,
+                    results,
+                );
+
+                current_path.pop();
+            }
+        }
+        Value::Array(arr) => {
+            for (idx, val) in arr.iter().enumerate() {
+                current_path.push(idx.to_string());
+                find_matching_paths(
+                    val,
+                    pattern,
+                    keys_only,
+                    values_only,
+                    ignore_case,
+                    current_path,
+                    results,
+                );
+                current_path.pop();
+            }
+        }
+        Value::String(s) => {
+            if !keys_only && matches_pattern(s) {
+                results.push(current_path.clone());
+            }
+        }
+        Value::Number(n) => {
+            if !keys_only && matches_pattern(&n.to_string()) {
+                results.push(current_path.clone());
+            }
+        }
+        Value::Bool(b) => {
+            if !keys_only && matches_pattern(&b.to_string()) {
+                results.push(current_path.clone());
+            }
+        }
+        Value::Null => {
+            if !keys_only && matches_pattern("null") {
+                results.push(current_path.clone());
+            }
+        }
+    }
+}
+
+// Filter value to only include paths matching the given prefixes
+fn filter_by_prefixes(value: &Value, prefixes: &[Vec<String>]) -> Option<Value> {
+    filter_by_prefixes_helper(value, prefixes, &[])
+}
+
+fn filter_by_prefixes_helper(
+    value: &Value,
+    prefixes: &[Vec<String>],
+    current_path: &[String],
+) -> Option<Value> {
+    // Check if current path is a prefix of any matching path
+    let is_prefix_match = prefixes.iter().any(|prefix| {
+        if prefix.len() < current_path.len() {
+            false
+        } else if prefix.len() == current_path.len() {
+            prefix == current_path
+        } else {
+            prefix[..current_path.len()] == current_path[..]
+        }
+    });
+
+    if !is_prefix_match {
+        return None;
+    }
+
+    // Check if we've reached a context boundary (exact match with a prefix)
+    let at_context_boundary = prefixes
+        .iter()
+        .any(|prefix| prefix.as_slice() == current_path);
+
+    if at_context_boundary {
+        // Include everything from here down
+        return Some(value.clone());
+    }
+
+    // Continue filtering recursively
+    match value {
+        Value::Object(map) => {
+            let mut result_map = serde_json::Map::new();
+            for (key, val) in map {
+                let mut new_path = current_path.to_vec();
+                new_path.push(key.clone());
+
+                if let Some(filtered) = filter_by_prefixes_helper(val, prefixes, &new_path) {
+                    result_map.insert(key.clone(), filtered);
+                }
+            }
+
+            if result_map.is_empty() {
+                None
+            } else {
+                Some(Value::Object(result_map))
+            }
+        }
+        Value::Array(arr) => {
+            let mut result_array = Vec::new();
+            for (idx, val) in arr.iter().enumerate() {
+                let mut new_path = current_path.to_vec();
+                new_path.push(idx.to_string());
+
+                if let Some(filtered) = filter_by_prefixes_helper(val, prefixes, &new_path) {
+                    result_array.push(filtered);
+                }
+            }
+
+            if result_array.is_empty() {
+                None
+            } else {
+                Some(Value::Array(result_array))
+            }
+        }
+        _ => Some(value.clone()),
+    }
+}
+
+#[cfg(test)]
+mod jgrep_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_context_0_filters_to_match_only() {
+        let value = json!({
+            "users": [
+                {"name": "alice", "age": 30, "city": "NYC"},
+                {"name": "bob", "age": 25, "city": "SF"}
+            ]
+        });
+
+        let result = filter_with_context(&value, "alice", false, false, false, 0);
+        assert_eq!(result, Some(json!({"users": [{"name": "alice"}]})));
+    }
+
+    #[test]
+    fn test_context_1_includes_full_object() {
+        let value = json!({
+            "users": [
+                {"name": "alice", "age": 30, "city": "NYC"},
+                {"name": "bob", "age": 25, "city": "SF"}
+            ]
+        });
+
+        let result = filter_with_context(&value, "alice", false, false, false, 1);
+        let expected = json!({"users": [{"name": "alice", "age": 30, "city": "NYC"}]});
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn test_context_2_includes_all_array_elements() {
+        let value = json!({
+            "users": [
+                {"name": "alice", "age": 30, "city": "NYC"},
+                {"name": "bob", "age": 25, "city": "SF"}
+            ]
+        });
+
+        let result = filter_with_context(&value, "alice", false, false, false, 2);
+        let expected = json!({
+            "users": [
+                {"name": "alice", "age": 30, "city": "NYC"},
+                {"name": "bob", "age": 25, "city": "SF"}
+            ]
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn test_context_3_includes_all_top_level() {
+        let value = json!({
+            "users": [
+                {"name": "alice", "age": 30, "city": "NYC"}
+            ],
+            "metadata": {
+                "version": "1.0",
+                "updated": "2024-01-01"
+            }
+        });
+
+        let result = filter_with_context(&value, "alice", false, false, false, 3);
+        assert_eq!(result, Some(value.clone()));
+    }
+
+    #[test]
+    fn test_keys_only() {
+        let value = json!({
+            "alice": "value",
+            "bob": "alice"
+        });
+
+        let result = filter_with_context(&value, "alice", true, false, false, 0);
+        assert_eq!(result, Some(json!({"alice": "value"})));
+    }
+
+    #[test]
+    fn test_values_only() {
+        let value = json!({
+            "alice": "value",
+            "name": "alice"
+        });
+
+        let result = filter_with_context(&value, "alice", false, true, false, 0);
+        assert_eq!(result, Some(json!({"name": "alice"})));
+    }
+
+    #[test]
+    fn test_case_insensitive() {
+        let value = json!({"name": "ALICE"});
+
+        let result = filter_with_context(&value, "alice", false, false, true, 0);
+        assert_eq!(result, Some(json!({"name": "ALICE"})));
+    }
+
+    #[test]
+    fn test_no_match_returns_none() {
+        let value = json!({"name": "bob"});
+
+        let result = filter_with_context(&value, "alice", false, false, false, 0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_nested_match_with_context() {
+        let value = json!({
+            "company": {
+                "employees": [
+                    {"name": "alice", "role": "engineer"}
+                ]
+            }
+        });
+
+        let result = filter_with_context(&value, "alice", false, false, false, 1);
+        let expected = json!({
+            "company": {
+                "employees": [
+                    {"name": "alice", "role": "engineer"}
+                ]
+            }
+        });
+        assert_eq!(result, Some(expected));
+    }
+}
+
+pub async fn transpose(file: FileOrStd, delimiter: Regex, output_delimiter: String) -> Result<()> {
     let mut reader = file.open_read().await?;
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -1456,7 +1813,12 @@ pub async fn transpose(
         let trimmed = line.trim_end();
         if !trimmed.is_empty() {
             let columns: Vec<&str> = delimiter.split(trimmed).collect();
-            lines.push(columns.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            lines.push(
+                columns
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+            );
         }
         line.clear();
     }
@@ -1486,6 +1848,7 @@ pub async fn transpose(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn regexify(
     file: FileOrStd,
     digits: bool,
@@ -1586,7 +1949,8 @@ pub async fn lookup(
                 line.clone()
             } else {
                 let parts: Vec<&str> = delimiter.split(&line).collect();
-                parts.get(field_num - 1)
+                parts
+                    .get(field_num - 1)
                     .map(|s| s.to_string())
                     .unwrap_or_default()
             }
@@ -1602,12 +1966,10 @@ pub async fn lookup(
             } else {
                 println!("{}", result);
             }
+        } else if enrich {
+            println!("{}", line);
         } else {
-            if enrich {
-                println!("{}", line);
-            } else {
-                println!();
-            }
+            println!();
         }
     }
 

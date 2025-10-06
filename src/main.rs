@@ -572,6 +572,10 @@ enum Commands {
         #[clap(short, long)]
         pretty: bool,
 
+        /// Include N levels of context above matches (0=only matching path, 1+=full content at ancestor levels)
+        #[clap(short, long, default_value = "0")]
+        context: usize,
+
         /// The file to process (defaults to stdin)
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
@@ -775,7 +779,15 @@ async fn main() -> Result<()> {
             selector,
             delimiter,
             output_delimiter,
-        } => field(file.unwrap_or_default(), &selector, delimiter, output_delimiter).await,
+        } => {
+            field(
+                file.unwrap_or_default(),
+                &selector,
+                delimiter,
+                output_delimiter,
+            )
+            .await
+        }
         Commands::Unnest { file, delimiter } => unnest(file.unwrap_or_default(), delimiter).await,
         Commands::Replace {
             regex,
@@ -917,6 +929,7 @@ async fn main() -> Result<()> {
             values_only,
             ignore_case,
             pretty,
+            context,
             file,
         } => {
             jgrep(
@@ -926,6 +939,7 @@ async fn main() -> Result<()> {
                 values_only,
                 ignore_case,
                 pretty,
+                context,
             )
             .await
         }

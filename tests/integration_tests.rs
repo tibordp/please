@@ -273,7 +273,16 @@ async fn test_jgrep_basic() {
     let temp_file = create_test_file(json_content).await;
     let file_input = FileOrStd::File(temp_file.path().to_path_buf());
 
-    let result = jgrep(file_input, "dark".to_string(), false, false, false, false).await;
+    let result = jgrep(
+        file_input,
+        "dark".to_string(),
+        false,
+        false,
+        false,
+        false,
+        0,
+    )
+    .await;
     assert!(result.is_ok());
 }
 
@@ -284,7 +293,16 @@ async fn test_jgrep_array_primitives() {
     let temp_file = create_test_file(json_content).await;
     let file_input = FileOrStd::File(temp_file.path().to_path_buf());
 
-    let result = jgrep(file_input, "dark".to_string(), false, false, false, false).await;
+    let result = jgrep(
+        file_input,
+        "dark".to_string(),
+        false,
+        false,
+        false,
+        false,
+        0,
+    )
+    .await;
     assert!(result.is_ok());
 }
 
@@ -294,7 +312,7 @@ async fn test_jgrep_keys_only() {
     let temp_file = create_test_file(json_content).await;
     let file_input = FileOrStd::File(temp_file.path().to_path_buf());
 
-    let result = jgrep(file_input, "user".to_string(), true, false, false, false).await;
+    let result = jgrep(file_input, "user".to_string(), true, false, false, false, 0).await;
     assert!(result.is_ok());
 }
 
@@ -304,6 +322,15 @@ async fn test_jgrep_values_only() {
     let temp_file = create_test_file(json_content).await;
     let file_input = FileOrStd::File(temp_file.path().to_path_buf());
 
-    let result = jgrep(file_input, "alice".to_string(), false, true, false, false).await;
+    let result = jgrep(
+        file_input,
+        "alice".to_string(),
+        false,
+        true,
+        false,
+        false,
+        0,
+    )
+    .await;
     assert!(result.is_ok());
 }
