@@ -11,9 +11,9 @@ use clap_complete::{generate, Shell};
 
 use crate::cache::{cache_command, clip, clop};
 use crate::commands::{
-    append, enrich, extract, field, format, group_by, intersect, jgrep, join, merge, prepend,
-    replace, sample, skip, sort_lines, subtract, take, tally_impl, transpose, union, unnest, unzip,
-    where_filter, window, zip, Sort, SortType,
+    append, enrich, extract, field, format, group_by, intersect, jgrep, join, lookup, merge,
+    prepend, regexify, replace, sample, skip, sort_lines, subtract, take, tally_impl, transpose,
+    union, unnest, unzip, where_filter, window, zip, Sort, SortType,
 };
 use crate::io::FileOrStd;
 
@@ -361,16 +361,20 @@ enum Commands {
 
     /// Print the n-th column of a file
     Field {
-        /// The column to print
-        n: usize,
+        /// Field selector: single (1), multiple (1,3,5), range (2-4), or combination (1,2-4,6)
+        selector: String,
 
         /// The file to print the column from (defaults to stdin)
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
 
-        /// Delimiter regex
+        /// Input delimiter regex
         #[clap(short, long, default_value = r"\t|,")]
         delimiter: regex::Regex,
+
+        /// Output delimiter
+        #[clap(short, long, default_value = ",")]
+        output_delimiter: String,
     },
 
     /// Turn columns into rows
@@ -587,6 +591,76 @@ enum Commands {
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
     },
+
+    /// Generate regex from test cases (based on grex, one test case per line)
+    Regexify {
+        /// Convert digits to character classes
+        #[clap(short, long)]
+        digits: bool,
+
+        /// Convert words to character classes
+        #[clap(short, long)]
+        words: bool,
+
+        /// Convert repetitions
+        #[clap(short, long)]
+        repetitions: bool,
+
+        /// Escape non-ASCII characters
+        #[clap(short, long)]
+        escape_non_ascii: bool,
+
+        /// Enable case-insensitive matching
+        #[clap(short = 'i', long)]
+        case_insensitive: bool,
+
+        /// Use non-capturing groups instead of capturing groups
+        #[clap(short = 'n', long)]
+        non_capturing_groups: bool,
+
+        /// Generate verbose regex
+        #[clap(short = 'x', long)]
+        verbose: bool,
+
+        /// Add anchors (^ and $)
+        #[clap(short, long)]
+        anchors: bool,
+
+        /// The file to process (defaults to stdin)
+        #[clap(value_hint = ValueHint::FilePath)]
+        file: Option<FileOrStd>,
+    },
+
+    /// Lookup values from a reference file
+    Lookup {
+        /// Lookup file to search in
+        #[clap(short = 'f', long, value_hint = ValueHint::FilePath)]
+        lookup_file: FileOrStd,
+
+        /// Field number in lookup file to match against (0 for whole line)
+        #[clap(short = 'l', long, default_value = "1")]
+        lookup_field: usize,
+
+        /// Field number in input to use for matching (0 or omit for whole line)
+        #[clap(short = 'i', long)]
+        input_field: Option<usize>,
+
+        /// Enrich mode: join input line with looked up line instead of replacing
+        #[clap(short = 'e', long, visible_alias = "join")]
+        enrich: bool,
+
+        /// Output delimiter (only used in enrich mode)
+        #[clap(short, long, default_value = ",")]
+        output_delimiter: String,
+
+        /// Delimiter regex
+        #[clap(short, long, default_value = r"\t|,")]
+        delimiter: regex::Regex,
+
+        /// The input file to process (defaults to stdin)
+        #[clap(value_hint = ValueHint::FilePath)]
+        file: Option<FileOrStd>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -696,9 +770,12 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Field { file, n, delimiter } => {
-            field(file.unwrap_or_default(), n, delimiter).await
-        }
+        Commands::Field {
+            file,
+            selector,
+            delimiter,
+            output_delimiter,
+        } => field(file.unwrap_or_default(), &selector, delimiter, output_delimiter).await,
         Commands::Unnest { file, delimiter } => unnest(file.unwrap_or_default(), delimiter).await,
         Commands::Replace {
             regex,
@@ -856,7 +933,51 @@ async fn main() -> Result<()> {
             delimiter,
             output_delimiter,
             file,
-        } => transpose(file.unwrap_or_default(), delimiter, output_delimiter).await
+        } => transpose(file.unwrap_or_default(), delimiter, output_delimiter).await,
+        Commands::Regexify {
+            digits,
+            words,
+            repetitions,
+            escape_non_ascii,
+            case_insensitive,
+            non_capturing_groups,
+            verbose,
+            anchors,
+            file,
+        } => {
+            regexify(
+                file.unwrap_or_default(),
+                digits,
+                words,
+                repetitions,
+                escape_non_ascii,
+                case_insensitive,
+                non_capturing_groups,
+                verbose,
+                anchors,
+            )
+            .await
+        }
+        Commands::Lookup {
+            lookup_file,
+            lookup_field,
+            input_field,
+            enrich,
+            output_delimiter,
+            delimiter,
+            file,
+        } => {
+            lookup(
+                file.unwrap_or_default(),
+                lookup_file,
+                lookup_field,
+                input_field,
+                enrich,
+                output_delimiter,
+                delimiter,
+            )
+            .await
+        }
     }?;
 
     Ok(())

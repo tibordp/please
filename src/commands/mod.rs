@@ -620,23 +620,74 @@ pub async fn enrich(
     Ok(())
 }
 
-pub async fn field(file: FileOrStd, n: usize, delimiter: Regex) -> Result<()> {
+/// Parse field selector like "1", "1,3,5", "2-4", or "1,2-4,6"
+fn parse_field_selector(selector: &str) -> Result<Vec<usize>> {
+    let mut fields = Vec::new();
+
+    for part in selector.split(',') {
+        let part = part.trim();
+        if part.contains('-') {
+            // Range like "2-4"
+            let range_parts: Vec<&str> = part.split('-').collect();
+            if range_parts.len() != 2 {
+                anyhow::bail!("Invalid range syntax: {}", part);
+            }
+            let start: usize = range_parts[0].trim().parse()
+                .map_err(|_| anyhow::anyhow!("Invalid number: {}", range_parts[0]))?;
+            let end: usize = range_parts[1].trim().parse()
+                .map_err(|_| anyhow::anyhow!("Invalid number: {}", range_parts[1]))?;
+
+            if start == 0 || end == 0 {
+                anyhow::bail!("Field indices must be >= 1");
+            }
+            if start > end {
+                anyhow::bail!("Invalid range: {} > {}", start, end);
+            }
+
+            for i in start..=end {
+                fields.push(i);
+            }
+        } else {
+            // Single field
+            let n: usize = part.parse()
+                .map_err(|_| anyhow::anyhow!("Invalid field number: {}", part))?;
+            if n == 0 {
+                anyhow::bail!("Field indices must be >= 1 (use '0' alone to print whole line)");
+            }
+            fields.push(n);
+        }
+    }
+
+    Ok(fields)
+}
+
+pub async fn field(
+    file: FileOrStd,
+    selector: &str,
+    delimiter: Regex,
+    output_delimiter: String,
+) -> Result<()> {
     let reader = file.open_read().await?;
     let mut lines = reader.lines();
 
-    if n == 0 {
+    // Special case: "0" means print whole line
+    if selector == "0" {
         while let Some(line) = lines.next_line().await? {
             println!("{}", line);
         }
-    } else {
-        while let Some(line) = lines.next_line().await? {
-            let mut parts = delimiter.split(&line);
-            if let Some(part) = parts.nth(n - 1) {
-                println!("{}", part);
-            } else {
-                println!();
-            }
-        }
+        return Ok(());
+    }
+
+    let field_indices = parse_field_selector(selector)?;
+
+    while let Some(line) = lines.next_line().await? {
+        let parts: Vec<&str> = delimiter.split(&line).collect();
+        let selected: Vec<&str> = field_indices
+            .iter()
+            .map(|&idx| parts.get(idx - 1).copied().unwrap_or(""))
+            .collect();
+
+        println!("{}", selected.join(&output_delimiter));
     }
 
     Ok(())
@@ -1430,6 +1481,134 @@ pub async fn transpose(
             .collect();
 
         println!("{}", transposed_row.join(&output_delimiter));
+    }
+
+    Ok(())
+}
+
+pub async fn regexify(
+    file: FileOrStd,
+    digits: bool,
+    words: bool,
+    repetitions: bool,
+    escape_non_ascii: bool,
+    case_insensitive: bool,
+    non_capturing_groups: bool,
+    verbose: bool,
+    anchors: bool,
+) -> Result<()> {
+    let mut reader = file.open_read().await?;
+    let mut test_cases = Vec::new();
+    let mut line = String::new();
+
+    // Read all test cases (one per line)
+    while reader.read_line(&mut line).await? > 0 {
+        let trimmed = line.trim_end();
+        if !trimmed.is_empty() {
+            test_cases.push(trimmed.to_string());
+        }
+        line.clear();
+    }
+
+    if test_cases.is_empty() {
+        return Ok(());
+    }
+
+    // Build regex using grex
+    let mut builder = grex::RegExpBuilder::from(&test_cases);
+
+    if digits {
+        builder.with_conversion_of_digits();
+    }
+    if words {
+        builder.with_conversion_of_words();
+    }
+    if repetitions {
+        builder.with_conversion_of_repetitions();
+    }
+    if escape_non_ascii {
+        builder.with_escaping_of_non_ascii_chars(false);
+    }
+    if case_insensitive {
+        builder.with_case_insensitive_matching();
+    }
+    if non_capturing_groups {
+        // Non-capturing is the default, so we only enable capturing groups when flag is NOT set
+    } else {
+        builder.with_capturing_groups();
+    }
+    if verbose {
+        builder.with_verbose_mode();
+    }
+    if !anchors {
+        builder.without_anchors();
+    }
+
+    let regex = builder.build();
+    println!("{}", regex);
+
+    Ok(())
+}
+
+pub async fn lookup(
+    input_file: FileOrStd,
+    lookup_file: FileOrStd,
+    lookup_field: usize,
+    input_field: Option<usize>,
+    enrich: bool,
+    output_delimiter: String,
+    delimiter: Regex,
+) -> Result<()> {
+    // Read lookup file into HashMap
+    let mut lookup_map: HashMap<String, String> = HashMap::new();
+    let lookup_reader = lookup_file.open_read().await?;
+    let mut lookup_lines = lookup_reader.lines();
+
+    while let Some(line) = lookup_lines.next_line().await? {
+        let parts: Vec<&str> = delimiter.split(&line).collect();
+
+        if lookup_field == 0 {
+            // Use whole line as key
+            lookup_map.insert(line.clone(), line);
+        } else if let Some(key) = parts.get(lookup_field - 1) {
+            // Use specified field as key, store whole line as value
+            lookup_map.insert(key.to_string(), line);
+        }
+    }
+
+    // Process input file
+    let input_reader = input_file.open_read().await?;
+    let mut input_lines = input_reader.lines();
+
+    while let Some(line) = input_lines.next_line().await? {
+        let search_key = if let Some(field_num) = input_field {
+            if field_num == 0 {
+                line.clone()
+            } else {
+                let parts: Vec<&str> = delimiter.split(&line).collect();
+                parts.get(field_num - 1)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            }
+        } else {
+            // No input field specified, use whole line
+            line.clone()
+        };
+
+        // Lookup and print result
+        if let Some(result) = lookup_map.get(&search_key) {
+            if enrich {
+                println!("{}{}{}", line, output_delimiter, result);
+            } else {
+                println!("{}", result);
+            }
+        } else {
+            if enrich {
+                println!("{}", line);
+            } else {
+                println!();
+            }
+        }
     }
 
     Ok(())
