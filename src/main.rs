@@ -11,9 +11,9 @@ use clap_complete::{generate, Shell};
 
 use crate::cache::{cache_command, clip, clop};
 use crate::commands::{
-    append, enrich, extract, field, format, group_by, intersect, jgrep, join, lookup, merge,
-    prepend, regexify, replace, sample, skip, sort_lines, subtract, take, tally_impl, transpose,
-    union, unnest, unzip, where_filter, window, zip, Sort, SortType,
+    append, enrich, extract, field, format, group_by, intersect, jgrep, join, lookup, merge, pipe,
+    pope, prepend, regexify, replace, sample, skip, sort_lines, subtract, take, tally_impl,
+    transpose, union, unnest, unzip, where_filter, window, zip, Sort, SortType,
 };
 use crate::io::FileOrStd;
 
@@ -665,6 +665,20 @@ enum Commands {
         #[clap(value_hint = ValueHint::FilePath)]
         file: Option<FileOrStd>,
     },
+
+    /// Write stdin to a named FIFO (blocks until pope connects)
+    Pipe {
+        /// Name of the pipe (optional, defaults to "default")
+        #[clap(short, long)]
+        name: Option<String>,
+    },
+
+    /// Read from a named FIFO to stdout (blocks until pipe connects)
+    Pope {
+        /// Name of the pipe (optional, defaults to "default")
+        #[clap(short, long)]
+        name: Option<String>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -992,6 +1006,8 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Pipe { name } => pipe(name),
+        Commands::Pope { name } => pope(name),
     }?;
 
     Ok(())

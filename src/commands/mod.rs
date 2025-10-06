@@ -1975,3 +1975,77 @@ pub async fn lookup(
 
     Ok(())
 }
+
+pub fn pipe(name: Option<String>) -> Result<()> {
+    use std::fs;
+    use std::io::{self};
+    use std::path::PathBuf;
+
+    // Determine pipe path
+    let pipe_name = name.unwrap_or_else(|| "default".to_string());
+    let cache_dir = shellexpand::tilde("~/.cache/please/pipes");
+    let pipe_dir = PathBuf::from(cache_dir.as_ref());
+    fs::create_dir_all(&pipe_dir)?;
+
+    let pipe_path = pipe_dir.join(&pipe_name);
+
+    // Create FIFO if it doesn't exist
+    let pipe_path_cstr = std::ffi::CString::new(pipe_path.to_str().unwrap())?;
+    unsafe {
+        let result = libc::mkfifo(pipe_path_cstr.as_ptr(), 0o600);
+        if result != 0 {
+            let err = io::Error::last_os_error();
+            // EEXIST is fine - FIFO already exists
+            if err.raw_os_error() != Some(libc::EEXIST) {
+                return Err(anyhow::anyhow!("Failed to create FIFO: {}", err));
+            }
+        }
+    }
+
+    // Open FIFO for writing (blocks until reader connects)
+    let mut fifo = fs::OpenOptions::new().write(true).open(&pipe_path)?;
+
+    // Copy stdin to FIFO
+    let stdin = io::stdin();
+    let mut stdin_lock = stdin.lock();
+    io::copy(&mut stdin_lock, &mut fifo)?;
+
+    Ok(())
+}
+
+pub fn pope(name: Option<String>) -> Result<()> {
+    use std::fs;
+    use std::io::{self};
+    use std::path::PathBuf;
+
+    // Determine pipe path
+    let pipe_name = name.unwrap_or_else(|| "default".to_string());
+    let cache_dir = shellexpand::tilde("~/.cache/please/pipes");
+    let pipe_dir = PathBuf::from(cache_dir.as_ref());
+    fs::create_dir_all(&pipe_dir)?;
+
+    let pipe_path = pipe_dir.join(&pipe_name);
+
+    // Create FIFO if it doesn't exist
+    let pipe_path_cstr = std::ffi::CString::new(pipe_path.to_str().unwrap())?;
+    unsafe {
+        let result = libc::mkfifo(pipe_path_cstr.as_ptr(), 0o600);
+        if result != 0 {
+            let err = io::Error::last_os_error();
+            // EEXIST is fine - FIFO already exists
+            if err.raw_os_error() != Some(libc::EEXIST) {
+                return Err(anyhow::anyhow!("Failed to create FIFO: {}", err));
+            }
+        }
+    }
+
+    // Open FIFO for reading (blocks until writer connects)
+    let mut fifo = fs::File::open(&pipe_path)?;
+
+    // Copy FIFO to stdout
+    let stdout = io::stdout();
+    let mut stdout_lock = stdout.lock();
+    io::copy(&mut fifo, &mut stdout_lock)?;
+
+    Ok(())
+}
