@@ -35,6 +35,11 @@ Commands:
   group      Group by field and aggregate (defaults to dedup like sort -u)
   window     Monitor pipe throughput and show recent lines (like pv but for content)
   jgrep      Filter JSON to show only subtrees containing matching values
+  transpose  Transpose rows and columns
+  regexify   Generate regex from test cases (based on grex, one test case per line)
+  lookup     Lookup values from a reference file
+  pipe       Write stdin to a named FIFO (blocks until pope connects)
+  pope       Read from a named FIFO to stdout (blocks until pipe connects)
   help       Print this message or the help of the given subcommand(s)
 
 Options:
