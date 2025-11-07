@@ -454,6 +454,10 @@ enum Commands {
         #[clap(short, long, default_value = ".")]
         directory: String,
 
+        /// Use relative symlinks
+        #[clap(long)]
+        relative: bool,
+
         /// Overwrite existing link
         #[clap(short, long)]
         force: bool,
@@ -827,11 +831,28 @@ async fn main() -> Result<()> {
         } => cache_command(command, delete, cache_dir).await,
         Commands::Install {
             directory,
+            relative,
             force,
             prefix,
         } => {
             let executable = std::env::current_exe()?;
             let directory = PathBuf::from(&*shellexpand::tilde(&directory));
+
+            // Determine the source path for the symlink
+            let source = if relative {
+                // Safety check: verify "please" exists in the directory unless force is set
+                let mut please_path = directory.clone();
+                please_path.push("please");
+                if !please_path.exists() && !force {
+                    return Err(anyhow::anyhow!(
+                        "Cannot create relative symlinks: 'please' not found in {}. Use --force to override.",
+                        directory.display()
+                    ));
+                }
+                PathBuf::from("please")
+            } else {
+                executable.clone()
+            };
 
             for i in <Cli as CommandFactory>::command().get_subcommands() {
                 if i.get_name() == "install" || i.get_name() == "complete" {
@@ -841,12 +862,12 @@ async fn main() -> Result<()> {
                 let mut path = directory.clone();
                 path.push(format!("{}{}", prefix, i.get_name()));
 
-                match tokio::fs::symlink(&executable, &path).await {
+                match tokio::fs::symlink(&source, &path).await {
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                         if force {
                             tokio::fs::remove_file(&path).await?;
-                            tokio::fs::symlink(&executable, path).await?;
+                            tokio::fs::symlink(&source, path).await?;
                         }
                     }
                     Err(e) => return Err(e.into()),

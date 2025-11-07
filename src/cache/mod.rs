@@ -2,7 +2,7 @@ use std::{
     hash::Hasher,
     io::SeekFrom,
     mem::MaybeUninit,
-    os::unix::{prelude::OsStrExt, process::ExitStatusExt},
+    os::unix::{prelude::OsStrExt, process::ExitStatusExt, fs::DirBuilderExt},
     path::PathBuf,
     process::{exit, ExitStatus},
 };
@@ -69,7 +69,11 @@ pub async fn cache_command(command: Vec<String>, delete: bool, cache_dir: String
         return Ok(());
     }
 
-    tokio::fs::create_dir_all(&cache_dir).await?;
+    // Create cache directory with user-only permissions (0o700)
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&cache_dir)?;
 
     if cache_path.exists() {
         let mut cache_file = tokio::fs::File::open(&cache_path).await?;
@@ -91,7 +95,13 @@ pub async fn cache_command(command: Vec<String>, delete: bool, cache_dir: String
         exit_with(exit_status);
     }
 
-    let mut cache_file = tokio::fs::File::create(&tmp_cache_path).await?;
+    let mut cache_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp_cache_path)
+        .await?;
     cache_file
         .write_all(&[0; std::mem::size_of::<ExitStatus>()])
         .await?;
@@ -180,9 +190,19 @@ pub async fn clip(
         return Ok(());
     }
 
-    tokio::fs::create_dir_all(&cache_dir).await?;
+    // Create cache directory with user-only permissions (0o700)
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&cache_dir)?;
 
-    let mut cache_file = tokio::fs::File::create(&tmp_cache_path).await?;
+    let mut cache_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp_cache_path)
+        .await?;
     let mut stdin = tokio::io::stdin();
 
     tokio::io::copy(&mut stdin, &mut cache_file).await?;

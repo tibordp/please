@@ -1979,13 +1979,19 @@ pub async fn lookup(
 pub fn pipe(name: Option<String>) -> Result<()> {
     use std::fs;
     use std::io::{self};
+    use std::os::unix::fs::DirBuilderExt;
     use std::path::PathBuf;
 
     // Determine pipe path
     let pipe_name = name.unwrap_or_else(|| "default".to_string());
     let cache_dir = shellexpand::tilde("~/.cache/please/pipes");
     let pipe_dir = PathBuf::from(cache_dir.as_ref());
-    fs::create_dir_all(&pipe_dir)?;
+
+    // Create directory with user-only permissions (0o700)
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&pipe_dir)?;
 
     let pipe_path = pipe_dir.join(&pipe_name);
 
@@ -2016,13 +2022,19 @@ pub fn pipe(name: Option<String>) -> Result<()> {
 pub fn pope(name: Option<String>) -> Result<()> {
     use std::fs;
     use std::io::{self};
+    use std::os::unix::fs::DirBuilderExt;
     use std::path::PathBuf;
 
     // Determine pipe path
     let pipe_name = name.unwrap_or_else(|| "default".to_string());
     let cache_dir = shellexpand::tilde("~/.cache/please/pipes");
     let pipe_dir = PathBuf::from(cache_dir.as_ref());
-    fs::create_dir_all(&pipe_dir)?;
+
+    // Create directory with user-only permissions (0o700)
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&pipe_dir)?;
 
     let pipe_path = pipe_dir.join(&pipe_name);
 
