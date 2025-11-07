@@ -685,6 +685,41 @@ enum Commands {
     },
 }
 
+/// Strip known prefixes from argv[0] to support --prefix in install command
+fn strip_prefix_from_argv() -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+
+    if let Some(arg0) = args.first_mut() {
+        if let Some(arg0_str) = arg0.to_str() {
+            // Get the basename (remove directory path)
+            let basename = std::path::Path::new(arg0_str)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(arg0_str);
+
+            // Try to match against known subcommands with any prefix
+            for cmd in <Cli as CommandFactory>::command().get_subcommands() {
+                let cmd_name = cmd.get_name();
+                if cmd_name == "install" || cmd_name == "complete" {
+                    continue;
+                }
+
+                // Check if basename ends with the command name
+                // This handles prefixes like "foo-jgrep" -> "jgrep"
+                if let Some(prefix_end) = basename.rfind(cmd_name) {
+                    if prefix_end + cmd_name.len() == basename.len() {
+                        // Found a match - replace arg0 with just the command name
+                        *arg0 = std::ffi::OsString::from(cmd_name);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    args
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     unsafe {
@@ -692,11 +727,14 @@ async fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    let command = match CliMultiCall::try_parse() {
+    // Strip any known prefix from argv[0] to support --prefix in install command
+    let args = strip_prefix_from_argv();
+
+    let command = match CliMultiCall::try_parse_from(&args) {
         Ok(m) => m.command,
         Err(e) if e.kind() == clap::error::ErrorKind::InvalidSubcommand => {
             // Reparse without multicall
-            Cli::parse().command
+            Cli::parse_from(&args).command
         }
         Err(e) => {
             e.exit();
